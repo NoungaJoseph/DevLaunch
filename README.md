@@ -1,0 +1,197 @@
+# MY LIFE OS
+
+*Design your life. Execute your goals. Become better.*
+
+A personal life operating system: Life Vision → 5 Pillars → 10 Life Areas → Goals (long-term to daily) → Tasks and Habits → Reviews.
+
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| 1 | Foundation: monorepo, Express API, Supabase schema + RLS + seed, Render config, design tokens | Done |
+| 2 | Auth and onboarding (mobile) | Done |
+| 3–4 | Goals, tasks, habits, dashboard, smart insights, AI coach, journal, weekly and monthly reviews (mobile) | Done |
+| 5 | Finance, projects, food, fitness, reading, social, relationships, reminders (API + mobile) | Done, tested against a fake DB only |
+| 6 | Debts, push reminders, offline reading, EAS config, web companion | Done (see notes) |
+| 7 | Real-device and real-Supabase testing, store release | Yours to run (see below) |
+
+## Layout
+
+```
+apps/mobile/               Expo React Native app (auth, onboarding, dashboard, goals, planner, coach)
+server/                    Express + TypeScript API (/api/v1)
+apps/web/                  Next.js web companion (sign in, today, goals, finance)
+supabase/migrations/       SQL migrations: core_schema, journal, life_modules, debts_push (date order)
+supabase/seed.sql          Default 5 pillars, 10 life areas
+packages/design-tokens/    Shared colours, spacing, radii, type sizes
+render.yaml                Render deployment blueprint
+```
+
+Mobile app: `apps/mobile` (Expo SDK 58, Expo Router, TanStack Query, React Hook Form + Zod). The Next.js companion lives in `apps/web`.
+
+## Setup
+
+1. Create a Supabase project. In the SQL editor (or with the Supabase CLI) run `supabase/migrations/*.sql`, then `supabase/seed.sql`.
+2. `cp server/.env.example server/.env` and fill in the Supabase URL and keys. The service-role key stays on the server only.
+3. `npm install`
+4. `npm run dev:server` (API on http://localhost:4000, health check at `/health`)
+
+## API (v1)
+
+All `/api/v1` routes need `Authorization: Bearer <Supabase access token>`. The user ID is taken from the verified token, never from the request.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET / PATCH | `/profile` | Read / update profile |
+| GET / PUT | `/life-vision` | Read / save life vision |
+| GET | `/pillars`, `/life-areas` | Default (and custom) pillars and areas |
+| GET | `/me/life-areas` | Areas the user has activated |
+| GET / POST | `/goals`, `/goals/:id` | List (filters, pagination, sorting) / create goals |
+| PUT | `/me/life-areas/:id` | Activate / deactivate an area `{ "is_active": true }` |
+| GET / POST / PATCH / DELETE | `/tasks`, `/tasks/:id` | Tasks. `PATCH { "completed": true }` completes one |
+| GET / POST / PATCH | `/habits`, `/habits/:id` | Habits (`paused`, `archived` flags) |
+| PUT / DELETE | `/habits/:id/completions/:date` | Mark a habit done / not done for a date |
+| PATCH / DELETE | `/goals/:id` | Update progress or status, delete |
+| GET / POST / PATCH / DELETE | `/goals/:id/milestones` | Milestones |
+| GET / POST / DELETE | `/journal` | Journal entries |
+| GET | `/dashboard/today` | Today's priorities, habits, goals, momentum, balance, insights |
+| GET | `/insights`, `/goals-overview` | Predictions and behaviour patterns; goals with progress and forecast |
+| GET/POST/PATCH/DELETE | `/projects`, `/project-tasks`, `/project-metrics`, `/income`, `/expenses`, `/budgets`, `/savings-goals`, `/savings-transactions`, `/external-savings`, `/daily-reviews`, `/daily-schedules`, `/calendar-events`, `/work-responsibilities`, `/social-platforms`, `/social-content`, `/grocery-lists`, `/grocery-items`, `/food-inventory`, `/meals`, `/meal-plans`, `/food-logs`, `/water-logs`, `/workouts`, `/workout-logs`, `/reading-items`, `/reading-sessions`, `/learning-notes`, `/relationship-notes`, `/reminders` | Generic CRUD (`modules/resources.ts`): validated, owner-scoped, paginated, `?from=&to=` date filters |
+| GET / PUT | `/reviews/weekly/current`, `/reviews/weekly/:date`, same for `monthly`; GET `/reviews/weekly` | Review with server-computed stats |
+| GET | `/finance/summary?month=`, `/projects/:id/dashboard` | Totals, budgets, savings; project tasks, metrics, profit |
+| GET / PUT | `/notification-preferences` | Quiet hours, daily cap |
+| GET / DELETE | `/me/export`, `/me` (body `{"confirm":"DELETE"}`) | Data export, account deletion |
+| POST | `/ai/coach`, `/ai/goal-breakdown`, `/ai/reflect` | Claude-powered (needs `ANTHROPIC_API_KEY`; rate-limited) |
+
+Responses: `{ "success": true, "data": ... }` or `{ "success": false, "error": { "code", "message" } }`.
+
+## Security notes
+
+- Every user table has RLS (`user_id = auth.uid()`); the API queries with a per-request client acting as the user, so RLS applies even if API code has a bug.
+- Request bodies are not logged; the `Authorization` header is redacted.
+
+## Deploy API to Render
+
+Connect the repo and use `render.yaml`; set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CORS_ORIGINS` in the dashboard.
+
+## Run the mobile app
+
+```
+cd apps/mobile
+cp .env.example .env     # Supabase URL + anon key, API URL (use your LAN IP on a phone)
+npm install
+npx expo start
+```
+
+In Supabase > Authentication > Email Templates, keep email confirmation enabled and use `{{ .Token }}` in the **Confirm signup** and **Reset password** templates. The mobile app verifies the emailed code directly with Supabase Auth.
+
+Supabase sessions are persisted in encrypted `expo-secure-store` chunks on iOS and Android (with `localStorage` only for the web preview). This avoids the native secure-store payload limit while keeping refresh tokens out of AsyncStorage.
+
+Styling uses NativeWind v4 (Tailwind classes). `src/theme/tokens.ts` is the single source of colours; `src/theme/vars.ts` turns it into CSS variables, so classes like `bg-surface`, `text-ink`, `border-line` follow light and dark mode automatically. A few values that depend on runtime state (animations, conditional colours) still use inline styles.
+
+## Smart features
+
+Predictions and behaviour patterns are calculated from the user's own records in `server/src/services/insights.ts`. They need no AI key and are unit-tested:
+
+- **Goal pace forecast:** compares real progress with the time used, projects a finish date, and flags goals as on track, slipping or behind.
+- **Habit streaks and lapse risk:** warns when you are likely to miss a habit today, based on how you did on the same weekday over the last 8 weeks.
+- **Behaviour patterns:** your best weekday and hour for finishing tasks, how late tasks tend to finish, and overload warnings.
+- **Life balance:** which of the five pillars got attention in the last 14 days. **Momentum:** one 0 to 100 score from habits, tasks and goals.
+
+The AI coach, goal breakdown and journal reflections call the Claude API. Set `ANTHROPIC_API_KEY` in `server/.env` (and in Render) to enable them. The mobile app sends its active `en`/`fr` locale and the API also falls back to `Accept-Language`, so Claude is explicitly instructed to answer in the user's language. The coach only receives summary numbers, never journal text or task notes, except an entry you explicitly ask it to reflect on. Without a key the rest of the app works and the AI screens explain how to enable it.
+
+## Tests
+
+```
+cd server
+npm test            # unit tests: insights engine, AI output parsing
+npm run test:api    # 149 API checks against an in-memory fake database (no Supabase needed)
+```
+
+`server/dev/fake-db-server.cts` is development-only test tooling. It fakes the database, auth and the Claude call, and must never be deployed. It does not replace testing against a real Supabase project.
+
+### Step 1 verification
+
+The bilingual/secure-session step is complete. Verification covers server and mobile TypeScript, server unit tests, the API harness, i18n parity/interpolation tests, the untranslated-copy audit, and an Expo web export. EN/FR light/dark smoke-test captures are stored in `docs/screenshots/step1/`.
+
+## Tutorials and setup guidance
+
+After onboarding, new accounts see a five-card bilingual welcome tour. First-visit tips are stored per user on the device and mirrored to `profiles.preferences.tutorial`, so reinstalling the app does not replay dismissed guidance. Settings includes **Replay tutorial**, which resets the tour and all coach marks. Home also shows setup progress for profile, first goal, first habit, money and PIN. Step 2 EN/FR light/dark captures are stored in `docs/screenshots/step2/`.
+
+## Wallet, payments and Goal Vault
+
+Apply `supabase/migrations/20261116000001_wallet_ledger.sql` after the earlier migrations. Wallet money uses whole XAF integers and an append-only double-entry ledger. Cached account balances update in the same database transaction; deferred balance enforcement rejects unbalanced transactions, wallet accounts cannot become negative, and every write requires a per-user `Idempotency-Key`. Run `npm run reconcile:ledger` in `server/` to compare cached balances with entry sums.
+
+Payment integrations use the `PaymentProvider` interface. `PAYMENTS_MODE=sandbox` runs the included simulator; configure its delay/success rate with `SANDBOX_PAYMENT_DELAY_MS` and `SANDBOX_PAYMENT_SUCCESS_RATE`. Set a strong `PAYMENTS_WEBHOOK_SECRET`; callbacks go to `POST /webhooks/payments/:provider` with an HMAC-SHA256 value in `X-Payment-Signature`. To connect real providers, replace the request/status methods in `MtnProvider` and `OrangeProvider`, then add `MTN_MOMO_API_KEY` and `ORANGE_MONEY_API_KEY` only to the server environment. Never place provider secrets in Expo variables.
+
+The Goal Vault requires a bilingual lock explanation and explicit consent before the first deposit. It reserves the configured emergency share, uses priority weights and largest-remainder integer rounding, caps goals at their remaining need, and automatically releases a goal to the wallet when its target is reached. Early release has no user UI and can only be completed through the verified support/admin endpoint.
+
+Step 3 wallet, Vault, and consent screens were smoke-tested in English and French, light and dark themes. Captures are stored in `docs/screenshots/step3/`.
+
+## Group savings
+
+Group savings are deliberately non-rotating: every member contributes from their wallet into a separate locked ledger share and receives only their own full savings after the creator's required end date. Creators choose daily, weekly, or monthly contributions, can hide exact member amounts, and share a random invite code. Members must accept the lock explanation when creating or joining, may catch up missed dates, and can leave only before their first contribution. Funded groups cannot be deleted.
+
+With the scheduler enabled, the API sends a bilingual push reminder the day before each due date and atomically releases matured member shares back to their wallets. Group chat is intentionally omitted; members see progress percentages and can send one gentle nudge per person per day. Apply `supabase/migrations/20261116000002_group_savings.sql` after the wallet migration. Step 4 English/French light/dark captures are stored in `docs/screenshots/step4/`.
+
+## Personal transformation (Step 5)
+
+Apply `supabase/migrations/20261117000001_transformation.sql` after the group savings migration. The mobile Profile screen opens a private transformation workspace for relationships, habits to leave behind, health, finance and character. Each area records the current and target self, a personal reason, concrete build/quit behaviors, optional links to an existing goal or habit, and one 1–10 check-in per week. Quit behaviors keep a current and best streak; an urge opens a one-minute pause and a private trigger note, while a relapse resets only the current streak. The weekly score history includes a simple line chart. All four tables have owner-scoped RLS and cascade on account deletion; the account export includes their rows. The insights engine receives only aggregate improvement counts, and the AI coach receives only those aggregate counts, never private self descriptions or trigger notes. EN/FR light/dark visual captures of the list, create form and detail are in `docs/screenshots/step5/`.
+
+## Screen time (Step 6)
+
+Apply `supabase/migrations/20261117000002_screen_time.sql`. Profile → Screen time lets users set per-app daily limits, 1- or 2-hour blocks, optional commitment mode, and view daily usage. Rules and usage are owner-scoped with RLS, included in account export, and deleted with the profile. An active commitment cannot be weakened or deleted in the API or database until its block window ends.
+
+Android uses the local Expo module in `apps/mobile/modules/my-life-screen-time`. Install a **development or production build**; Expo Go cannot load it. Grant Usage Access and enable the MY LIFE OS accessibility service after reading the in-app disclosure. Usage Access supplies per-app time totals. The accessibility service observes foreground package changes and draws the pause overlay; it does not inspect screen content. The service polls every 30 seconds while enabled. A daily limit starts one block window, and the user can revoke either permission in Android settings. Google Play distribution needs an [Accessibility API declaration and prominent disclosure](https://support.google.com/googleplay/android-developer/answer/10964491). Test the service on a physical Android device before release.
+
+iOS enforcement is gated off until Apple approves the [Family Controls entitlement](https://developer.apple.com/documentation/familycontrols). Apply for that entitlement for the app and its extensions in the Apple Developer portal, then add a native FamilyControls/DeviceActivity/ManagedSettings extension and a signed EAS development build. The current iOS app displays the capability state and stores settings, but **does not block apps**. Web and Expo Go also show a clear installed-build requirement. EN/FR light/dark screen captures are in `docs/screenshots/step6/`.
+
+## Mobile design system (Step 7)
+
+The shared mobile UI uses teal/navy/gold tokens in both phone themes, one card and spacing scale, pill tabs, gradient hero cards, animated progress rings, skeleton loaders, and haptics on primary actions. Empty states for wallet, Vault, groups, transformation, and screen time now use original SVG illustrations. Wallet balance counts up after a change, and completing a goal triggers a brief celebration animation. These elements live in `apps/mobile/src/components/ui.tsx` so their contrast, spacing, and motion remain consistent across screens. Visual checks are in `docs/screenshots/step7/` and the earlier step folders.
+
+## Run order for Supabase
+
+SQL editor: run migrations in filename order through `20261117000002_screen_time.sql`, then run `seed.sql`. Fill `server/.env` from `.env.example`.
+
+## Web app
+
+```
+cd apps/web && cp .env.example .env.local && npm install && npm run dev   # http://localhost:3000
+```
+Add `http://localhost:3000` (and your deployed web URL) to `CORS_ORIGINS` on the API. The web app covers sign-in, today (tick tasks and habits), goals and finance; everything else lives in the mobile app.
+
+## Push reminders
+
+Reminders and quiet hours are stored through the API. With `ENABLE_SCHEDULER=true` on exactly one API instance, a once-a-minute job sends due reminders through Expo's push service, respecting weekdays, quiet hours and your daily cap, and never twice per day. A phone must run a development or production build (not Expo Go), tap "Enable notifications" in Settings, and the build needs an EAS project ID (`eas init`).
+
+## Build the mobile app (EAS)
+
+```
+cd apps/mobile
+npm i -g eas-cli && eas login && eas init
+eas env:create --name EXPO_PUBLIC_SUPABASE_URL --value https://YOUR.supabase.co --visibility plaintext
+eas env:create --name EXPO_PUBLIC_SUPABASE_ANON_KEY --value YOUR_ANON_KEY --visibility plaintext
+# edit EXPO_PUBLIC_API_URL in eas.json, then:
+eas build --profile preview --platform android    # installable APK
+```
+
+## CI/CD pipeline
+
+GitHub Actions runs `.github/workflows/ci.yml` for every pull request and every push to `main`:
+
+- **Server:** clean install, TypeScript check, unit tests, the 172-check fake-database API suite, and production build.
+- **Mobile:** clean install, TypeScript check, i18n tests, untranslated-copy audit, and an Expo web export.
+- CI uses Node.js 20, matching the server's supported runtime.
+
+API deployment is described by `render.yaml`. Connect this repository to Render as a Blueprint and enable automatic deploys from `main`. Render builds `server/` with `npm install --include=dev && npm run build`, starts it with `npm start`, and checks `/health`. Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`, and `CORS_ORIGINS` in Render's secret environment settings; never commit them.
+
+Mobile releases remain an explicit EAS step. Create preview/production builds after CI passes; public Expo variables must be configured in EAS, while server secrets must never enter the mobile build.
+
+## Offline
+
+Screens you have opened keep their last data on the phone for 7 days and show it with an "offline" banner. Saving changes needs a connection (no offline write queue). The cache is wiped on sign out.
+
+## Not built
+
+an offline write queue, iOS/Android store submission, and a real-device test of push. Real Supabase and real Claude calls are untested here; everything was verified against an in-memory fake.

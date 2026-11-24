@@ -1,0 +1,13 @@
+node_modules
+dist
+dist-*
+.tmp-*
+/apps/web/AGENTS.md
+.env
+.env.*
+!.env.example
+.expo
+.gradle
+.next
+*.log
+.DS_Store
